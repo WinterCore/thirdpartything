@@ -1,13 +1,40 @@
-use std::{time::{self, UNIX_EPOCH}, collections::HashMap};
+use std::{time::{self, UNIX_EPOCH}, collections::HashMap, cell::RefCell};
 use tokio::sync::RwLock;
 use reqwest::{self, Client};
+use serde::{Deserialize, Serialize};
+
+
+#[derive(Debug, Serialize, Deserialize)]
+struct TwitchAuthDataResponse {
+    access_token: String,
+    expires_in: u64,
+    token_type: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ResponseDataWrapper<T> {
+    data: T,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct TwitchUserData {
+    id: String,
+    login: String,
+    display_name: String,
+
+    /*
+    profile_image_url: String,
+    created_at: String,
+    */
+}
+
+type TwitchUserDataResponse = ResponseDataWrapper<Vec<TwitchUserData>>;
 
 #[derive(Debug)]
 pub struct TwitchClient {
     client_id: String,
     client_secret: String,
-    auth_token: RwLock<Option<(String, u64)>>,
-
+    auth_token:  RefCell<RwLock<Option<(String, u64)>>>,
     twitch_username_id_map: RwLock<HashMap<String, String>>,
 }
 
@@ -16,7 +43,7 @@ impl TwitchClient {
         Self {
             client_id,
             client_secret,
-            auth_token: RwLock::new(None),
+            auth_token: RefCell::new(RwLock::new(None)),
             twitch_username_id_map: RwLock::new(HashMap::new()),
         }
     }
@@ -27,13 +54,16 @@ impl TwitchClient {
             .expect("Time went backwards")
             .as_secs();
 
-        let auth_token_read_lock = self.auth_token.read().await;
+        let auth_token = self.auth_token.borrow();
+        let auth_token_read_lock = auth_token.read().await;
 
-        if let Some((token, expires_at)) = auth_token_read_lock. {
-            if now < expires_at {
+        if let Some((token, expires_at)) = auth_token_read_lock.as_ref() {
+            if now < *expires_at {
                 return Ok(token.clone());
             }
         }
+        drop(auth_token_read_lock);
+        drop(auth_token);
 
         let token = self.update_auth_token().await?;
         
@@ -48,26 +78,19 @@ impl TwitchClient {
             ("grant_type", "client_credentials"),
         ];
 
-        let response_result = client.post("https://id.twitch.tv/oauth2/token")
+        let response = client.post("https://id.twitch.tv/oauth2/token")
             .query(&query)
             .send()
-            .await;
+            .await
+            .map_err(|x| x.to_string())?;
         
-        let response_result = match response_result {
-            Ok(resp) => resp,
-            Err(err) => return Err(err.to_string()),
-        };
+        let json = response
+            .json::<TwitchAuthDataResponse>()
+            .await
+            .map_err(|x| x.to_string())?;
 
-        let json = match response_result.json::<HashMap<String, String>>().await {
-            Ok(json) => json,
-            Err(err) => return Err(err.to_string()),
-        };
-
-        let token = json.get("access_token")
-            .ok_or("Invalid response".to_owned())?;
-        let expires_in = json.get("expires_in")
-            .and_then(|x| x.parse::<u64>().ok())
-            .ok_or("Invalid response".to_owned())?;
+        let token = json.access_token;
+        let expires_in = json.expires_in;
 
         let now = time::SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -75,9 +98,8 @@ impl TwitchClient {
             .as_secs();
         let expires_at = now + expires_in;
 
-        self.auth_token = Some(token.clone());
-        self.auth_token_expires = expires_at;
-        
+        self.auth_token.replace(RwLock::new(Some((token.clone(), expires_at))));
+        println!("Fetched new auth token {}", token.clone());
 
         Ok(token.clone())
     }
@@ -88,23 +110,22 @@ impl TwitchClient {
         let client = Client::new();
         let response = client.get("https://api.twitch.tv/helix/users")
             .header("Client-Id", &self.client_id)
-            .header("Authorization", auth_token)
+            .header("Authorization", format!("Bearer {auth_token}"))
             .query(&[("login", &username)])
             .send()
-            .await;
+            .await
+            .map_err(|x| x.to_string())?;
 
-        match response {
-            Ok(resp) => {
-                println!("{:?} {:?}", resp.status(), resp.text().await.unwrap());
-            },
-            Err(err) => {
-                println!("Error {:?}", err);
-            },
-        }
+        let json = response
+            .json::<TwitchUserDataResponse>()
+            .await
+            .map_err(|x| x.to_string())?;
 
-        // println!("Get User ID Response: {:?}", response);
+        let data = json.data
+            .get(0)
+            .ok_or("Empty user data")?;
 
-        Ok("fjasdkf".to_owned())
+        Ok(data.id.clone())
     }
 }
 

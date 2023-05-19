@@ -56,9 +56,11 @@ async fn serve_request(
 
     let request = HttpRequest::parse(&buffer);
 
-    twitch_client
+    let user_id = twitch_client
         .get_id_for_username("winterrcore")
         .await;
+
+    println!("{user_id:?}");
 
     Ok(())
 }
