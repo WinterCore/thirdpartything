@@ -1,137 +1,115 @@
-use std::{time::{self, UNIX_EPOCH}, collections::HashMap, cell::RefCell};
-use tokio::sync::RwLock;
-use reqwest::{self, Client};
-use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
+use tokio::sync::oneshot;
 
-#[derive(Debug, Serialize, Deserialize)]
-struct TwitchAuthDataResponse {
-    access_token: String,
-    expires_in: u64,
-    token_type: String,
+use crate::{seventv::get_twitch_user_emote_set, utils::now_secs};
+
+struct EmoteMap {
+    last_updated: u64, // seconds
+    map: HashMap<
+        String, // keyword
+        String, // id
+    >,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct ResponseDataWrapper<T> {
-    data: T,
+pub struct EmoteManager {
+    twitch_id_emotes_map: HashMap<String, EmoteMap>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct TwitchUserData {
-    id: String,
-    login: String,
-    display_name: String,
-
-    /*
-    profile_image_url: String,
-    created_at: String,
-    */
+pub enum EmoteManagerMessage {
+    GetUserEmoteByKeyword {
+        sender_cb: oneshot::Sender<Result<String, String>>,
+        twitch_id: String,
+        emote_keyword: String,
+    },
 }
 
-type TwitchUserDataResponse = ResponseDataWrapper<Vec<TwitchUserData>>;
-
-#[derive(Debug)]
-pub struct TwitchClient {
-    client_id: String,
-    client_secret: String,
-    auth_token:  RefCell<RwLock<Option<(String, u64)>>>,
-    twitch_username_id_map: RwLock<HashMap<String, String>>,
-}
-
-impl TwitchClient {
-    pub fn new(client_id: String, client_secret: String) -> Self {
+impl EmoteManager {
+    // in seconds
+    const USER_EMOTE_RELOAD_COOLDOWN: u64 = 10 * 60;
+                                                     
+    pub fn new() -> Self {
         Self {
-            client_id,
-            client_secret,
-            auth_token: RefCell::new(RwLock::new(None)),
-            twitch_username_id_map: RwLock::new(HashMap::new()),
+            twitch_id_emotes_map: HashMap::new(),
         }
     }
+    
+    async fn load_user_emotes(
+        &mut self,
+        twitch_id: &str,
+        reload: bool,
+    ) -> Result<bool, String> {
+        let existing = self.twitch_id_emotes_map.get(twitch_id);
 
-    async fn get_auth_token(&self) -> Result<String, String> {
-        let now = time::SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("Time went backwards")
-            .as_secs();
-
-        let auth_token = self.auth_token.borrow();
-        let auth_token_read_lock = auth_token.read().await;
-
-        if let Some((token, expires_at)) = auth_token_read_lock.as_ref() {
-            if now < *expires_at {
-                return Ok(token.clone());
+        if existing.is_some() && ! reload {
+            return Ok(false);
+        }
+        
+        if let Some(map) = existing {
+            if now_secs() > map.last_updated + Self::USER_EMOTE_RELOAD_COOLDOWN {
+                return Ok(false);
             }
         }
-        drop(auth_token_read_lock);
-        drop(auth_token);
 
-        let token = self.update_auth_token().await?;
-        
-        Ok(token)
+        let emote_set = get_twitch_user_emote_set(&twitch_id).await?;
+        println!("Emote set {:?}", emote_set);
+        let emote_map = EmoteMap {
+            last_updated: now_secs(),
+            map: HashMap::from_iter(
+                emote_set
+                .emotes
+                .into_iter()
+                .map(|x| (x.name, x.id))
+            ),
+        };
+
+        self.twitch_id_emotes_map.insert(twitch_id.to_owned(), emote_map);
+
+        Ok(true)
     }
 
-    async fn update_auth_token(&self) -> Result<String, String> {
-        let client = Client::new();
-        let query = vec![
-            ("client_id", self.client_id.as_str()),
-            ("client_secret", self.client_secret.as_str()),
-            ("grant_type", "client_credentials"),
-        ];
+    async fn get_user_emote(
+        &mut self,
+        twitch_id: &str,
+        emote_keyword: &str,
+    ) -> Result<String, String> {
+        self.load_user_emotes(twitch_id, false).await?;
 
-        let response = client.post("https://id.twitch.tv/oauth2/token")
-            .query(&query)
-            .send()
-            .await
-            .map_err(|x| x.to_string())?;
-        
-        let json = response
-            .json::<TwitchAuthDataResponse>()
-            .await
-            .map_err(|x| x.to_string())?;
+        let map = match self.twitch_id_emotes_map.get(twitch_id) {
+            Some(EmoteMap { map, last_updated }) => map,
+            None => return Err("7tv: User not found".to_owned()),
+        };
 
-        let token = json.access_token;
-        let expires_in = json.expires_in;
+        if ! map.contains_key(emote_keyword) {
+            drop(map);
+            if ! self.load_user_emotes(twitch_id, true).await? {
+                return Err("Emote not found".to_owned());
+            }
+        }
 
-        let now = time::SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("Time went backwards")
-            .as_secs();
-        let expires_at = now + expires_in;
+        // TODO: Refactor following duplicate code
+        let map = match self.twitch_id_emotes_map.get(twitch_id) {
+            Some(EmoteMap { map, last_updated }) => map,
+            None => return Err("7tv: User not found".to_owned()),
+        };
 
-        self.auth_token.replace(RwLock::new(Some((token.clone(), expires_at))));
-        println!("Fetched new auth token {}", token.clone());
+        if let Some(emote_id) = map.get(emote_keyword) {
+            return Ok(emote_id.clone());
+        }
 
-        Ok(token.clone())
+        Err("Emote not found".to_owned())
     }
 
-    pub async fn get_id_for_username(&self, username: &str) -> Result<String, String> {
-        let auth_token = self.get_auth_token().await?;
-
-        let client = Client::new();
-        let response = client.get("https://api.twitch.tv/helix/users")
-            .header("Client-Id", &self.client_id)
-            .header("Authorization", format!("Bearer {auth_token}"))
-            .query(&[("login", &username)])
-            .send()
-            .await
-            .map_err(|x| x.to_string())?;
-
-        let json = response
-            .json::<TwitchUserDataResponse>()
-            .await
-            .map_err(|x| x.to_string())?;
-
-        let data = json.data
-            .get(0)
-            .ok_or("Empty user data")?;
-
-        Ok(data.id.clone())
+    pub async fn handle_message(&mut self, msg: EmoteManagerMessage) {
+        match msg {
+            EmoteManagerMessage::GetUserEmoteByKeyword {
+                sender_cb: cb,
+                twitch_id,
+                emote_keyword,
+            } => {
+                let emote = self.get_user_emote(&twitch_id, &emote_keyword).await;
+                cb.send(emote).expect("Should send response");
+            },
+        }
     }
 }
-
-
-
-/*
-pub fn get_emote_path(username: &str, emote: &str) -> PathBuf {
-}
-*/
