@@ -58,19 +58,20 @@ impl EmotePuller {
         let from = {
             if emote.animated {
                 println!("Converting animated emote {}", emote.name);
-                let output = Command::new("magick")
-                    .arg("mogrify")
-                    .arg("-format")
-                    .arg("gif")
+                let mut to = temp_path.parent().expect("Emote file should have parent directory").to_path_buf();
+                to.push(Self::get_emote_filename(emote));
+
+                let output = Command::new("convert")
+                    .arg("-dispose")
+                    .arg("Background")
                     .arg(temp_path.to_path_buf().into_os_string())
+                    .arg(to.to_path_buf().into_os_string())
                     .output()
                     .await
                     .map_err(|x| x.to_string())?;
                 println!("Done converting animated emote {} {:?} {:?}", emote.name, str::from_utf8(&output.stdout), str::from_utf8(&output.stderr));
 
-                let mut path = temp_path.parent().expect("Emote file should have parent directory").to_path_buf();
-                path.push(Self::get_emote_filename(emote));
-                path
+                to
             } else {
                 temp_path.to_path_buf()
             }
