@@ -78,7 +78,8 @@ fn parse_request(pathname: &str) -> Option<ParsedRequest> {
     let parts: Vec<String> = pathname.trim_matches('/').split('/').map(|x| x.to_owned()).collect();
 
     if parts.len() == 1 {
-        let emote = parts.get(0)?.to_owned();
+        let emote = parts.get(0)?.to_owned().trim_end_matches(".gif").to_owned();
+
         return Some(ParsedRequest {
             emotes: vec![emote],
             twitch_username: None,
@@ -87,7 +88,7 @@ fn parse_request(pathname: &str) -> Option<ParsedRequest> {
 
     if parts.len() == 2 {
         let username = parts.get(0)?.to_owned();
-        let emote = parts.get(0)?.to_owned();
+        let emote = parts.get(0)?.to_owned().trim_end_matches(".gif").to_owned();
 
         return Some(ParsedRequest {
             emotes: vec![emote],
