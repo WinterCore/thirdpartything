@@ -36,8 +36,8 @@ type TwitchUserDataResponse = ResponseDataWrapper<Vec<TwitchUserData>>;
 pub struct TwitchClient {
     client_id: String,
     client_secret: String,
-    auth_token:  RefCell<Option<(String, u64)>>,
-    twitch_username_id_map: RefCell<RwLock<HashMap<String, String>>>,
+    auth_token: RwLock<Option<(String, u64)>>,
+    twitch_username_id_map: RwLock<HashMap<String, String>>,
 }
 
 impl TwitchClient {
@@ -45,8 +45,8 @@ impl TwitchClient {
         Self {
             client_id,
             client_secret,
-            auth_token: RefCell::new(None),
-            twitch_username_id_map: RefCell::new(RwLock::new(HashMap::new())),
+            auth_token: RwLock::new(None),
+            twitch_username_id_map: RwLock::new(HashMap::new()),
         }
     }
 
@@ -56,14 +56,14 @@ impl TwitchClient {
             .expect("Time went backwards")
             .as_secs();
 
-        let auth_token_ref = self.auth_token.borrow();
+        let auth_token = self.auth_token.read().await;
 
-        if let Some((token, expires_at)) = auth_token_ref.as_ref() {
+        if let Some((token, expires_at)) = auth_token.as_ref() {
             if now < *expires_at {
                 return Ok(token.clone());
             }
         }
-        drop(auth_token_ref);
+        drop(auth_token);
 
         let token = self.update_auth_token().await?;
         
@@ -95,21 +95,20 @@ impl TwitchClient {
         let now = now_secs();
         let expires_at = now + expires_in;
 
-        self.auth_token.replace(Some((token.clone(), expires_at)));
+        let mut auth_token = self.auth_token.write().await;
+        *auth_token = Some((token.clone(), expires_at));
         println!("Fetched new auth token");
 
         Ok(token.clone())
     }
 
     pub async fn get_id_for_username(&self, username: &str) -> Result<String, String> {
-        let username_map_ref = self.twitch_username_id_map.borrow();
-        let username_map = username_map_ref.read().await;
+        let username_map = self.twitch_username_id_map.read().await;
 
         if let Some(id) = username_map.get(username) {
             return Ok(id.clone());
         }
         drop(username_map);
-        drop(username_map_ref);
 
         let auth_token = self.get_auth_token().await?;
 
@@ -133,11 +132,9 @@ impl TwitchClient {
 
         let id = data.id.clone();
 
-        let username_map_ref = self.twitch_username_id_map.borrow();
-        let mut username_map = username_map_ref.write().await;
+        let mut username_map = self.twitch_username_id_map.write().await;
         username_map.insert(username.to_owned(), id.clone());
         drop(username_map);
-        drop(username_map_ref);
 
         Ok(id.clone())
     }

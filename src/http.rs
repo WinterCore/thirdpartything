@@ -24,7 +24,7 @@ pub enum HttpVersion {
 pub struct HttpRequest {
     pub verb: HttpVerb,
     pub version: HttpVersion,
-    pub pathname: PathBuf,
+    pub pathname: String,
     pub headers: HashMap<String, String>,
     pub body: Vec<u8>,
 }
@@ -55,7 +55,7 @@ impl HttpRequest {
         Err("Couldn't find header separator".to_owned())
     }
 
-    fn parse_request_line(input: &str) -> Option<(HttpVerb, PathBuf, HttpVersion)> {
+    fn parse_request_line(input: &str) -> Option<(HttpVerb, String, HttpVersion)> {
         let parts: Vec<&str> = input.split(" ").collect();
 
         let verb = match parts.get(0)?.to_ascii_uppercase().as_str() {
@@ -66,7 +66,7 @@ impl HttpRequest {
             _ => return None,
         };
 
-        let pathname = PathBuf::from(parts.get(1)?);
+        let pathname = (*parts.get(1)?).to_owned();
         let version = match *parts.get(2)? {
             "HTTP/0.9" => HttpVersion::v0_9,
             "HTTP/1.0" => HttpVersion::v1_0,
