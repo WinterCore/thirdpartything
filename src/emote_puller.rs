@@ -101,7 +101,6 @@ impl EmotePuller {
             let _ = semaphore.acquire()
                 .await
                 .map_err(|x| x.to_string())?;
-            semaphore.close();
 
             // Actually load emote
 

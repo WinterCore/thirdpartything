@@ -121,6 +121,8 @@ async fn serve_request(
     let ParsedRequest { emotes, twitch_username } = parse_request(&http_request.pathname)
         .ok_or("[ERROR]: Couldn't parse request pathname".to_owned())?;
 
+    println!("{:?}", emotes);
+
     let emote_keyword = emotes.into_iter().nth(0).unwrap();
 
     let emote = async {
@@ -153,6 +155,7 @@ async fn serve_request(
     };
 
     println!("Reading emote file");
+    println!("{:?}", EmotePuller::get_pulled_emote_path(&emote) );
     let emote_file = fs::read(EmotePuller::get_pulled_emote_path(&emote))
         .await
         .map_err(|x| x.to_string())?;
